@@ -44,6 +44,7 @@ if _ROOT not in sys.path:
 sys.path.insert(0, os.path.join(_ROOT, "TRELLIS.2"))
 sys.path.append(os.path.join(_ROOT, "stubs"))
 
+import contextlib
 import time
 
 import torch
@@ -73,7 +74,7 @@ WATCHDOG_HELP = (
     "  3. SPARSE_CONV_BACKEND=none python generate.py ... (slower path,\n"
     "     may not help if a single dispatch is the offender)\n"
     "\n"
-    "Tracking issue: https://github.com/shivampkumar/trellis-mac/issues"
+    "Tracking issue: https://github.com/SUP3RMASS1VE/trellis-mac-GUI/issues"
 )
 
 # Signatures of watchdog-induced corruption:
@@ -118,6 +119,44 @@ def is_pipeline_loaded():
     return _PIPELINE is not None
 
 
+# Stages inside pipeline.run() that emit no tqdm output. Without narration the
+# UI looks frozen on the last sampler bar for ~30s while these run.
+_SILENT_STAGES = [
+    ("decode_shape_slat", "Decoding shape latents into a mesh (VAE + mesh extraction)"),
+    ("decode_tex_slat", "Decoding texture latents (VAE)"),
+]
+
+
+@contextlib.contextmanager
+def _narrate_silent_stages(pipeline, log):
+    """Temporarily wrap the quiet decode stages so they report start and duration."""
+    originals = {}
+    for name, message in _SILENT_STAGES:
+        original = getattr(pipeline, name, None)
+        if original is None:
+            continue
+        # Remember whether this was already an instance attribute, so restoring
+        # removes our shadow instead of leaving a stale bound method behind.
+        originals[name] = (original, name in pipeline.__dict__)
+
+        def wrapper(*args, _original=original, _message=message, **kwargs):
+            log(f"{_message}...")
+            t0 = time.time()
+            result = _original(*args, **kwargs)
+            log(f"  done in {time.time() - t0:.0f}s")
+            return result
+
+        setattr(pipeline, name, wrapper)
+    try:
+        yield
+    finally:
+        for name, (original, was_instance_attr) in originals.items():
+            if was_instance_attr:
+                setattr(pipeline, name, original)
+            else:
+                delattr(pipeline, name)
+
+
 def generate(
     image,
     seed=42,
@@ -159,14 +198,15 @@ def generate(
     sampler_overrides = {"steps": steps} if steps else {}
 
     try:
-        outputs = pipeline.run(
-            image,
-            seed=seed,
-            pipeline_type=pipeline_type,
-            sparse_structure_sampler_params=sampler_overrides,
-            shape_slat_sampler_params=sampler_overrides,
-            tex_slat_sampler_params=sampler_overrides,
-        )
+        with _narrate_silent_stages(pipeline, log):
+            outputs = pipeline.run(
+                image,
+                seed=seed,
+                pipeline_type=pipeline_type,
+                sparse_structure_sampler_params=sampler_overrides,
+                shape_slat_sampler_params=sampler_overrides,
+                tex_slat_sampler_params=sampler_overrides,
+            )
     except (IndexError, AssertionError) as e:
         if any(sig in str(e) for sig in _WATCHDOG_SIGNATURES):
             raise WatchdogError() from e

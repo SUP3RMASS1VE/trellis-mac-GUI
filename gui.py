@@ -66,6 +66,7 @@ class _StreamTap:
                 continue
             if _TQDM_RE.search(line):
                 self._status["line"] = line
+                self._status["at"] = time.time()
             else:
                 self._log_q.put(line)
         return len(text)
@@ -81,14 +82,70 @@ def resolve_seed(randomize, seed):
     return random.randint(0, MAX_SEED) if randomize else int(seed)
 
 
-def load_pipeline_ui(progress=gr.Progress()):
-    """Warm up the pipeline so the first generation isn't 100s slower."""
+# Weights fetched on first run. Sizes are approximate on-disk footprints.
+MODEL_REPOS = [
+    ("microsoft/TRELLIS.2-4B", "pipeline", "14 GB"),
+    ("camenduru/dinov3-vitl16-pretrain-lvd1689m", "image conditioning", "1.1 GB"),
+    ("ZhengPeng7/BiRefNet", "background removal", "424 MB"),
+]
+
+
+def _repo_cached(repo_id):
+    """True if this repo already has a HuggingFace cache directory."""
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+    except ImportError:
+        return False
+    return os.path.isdir(os.path.join(HF_HUB_CACHE, "models--" + repo_id.replace("/", "--")))
+
+
+def uncached_repos():
+    return [(r, what, size) for r, what, size in MODEL_REPOS if not _repo_cached(r)]
+
+
+def pipeline_status_text():
+    """
+    Describe pipeline state for the Status box.
+
+    The pipeline lives in this Python process, so every app restart needs a
+    fresh load — worth saying out loud, since the load is ~75s.
+    """
     if runner.is_pipeline_loaded():
-        return "Pipeline already loaded on MPS."
-    progress(0, desc="Loading TRELLIS.2-4B onto MPS...")
+        return "Pipeline loaded on MPS — ready to generate."
+
+    missing = uncached_repos()
+    if missing:
+        total = ", ".join(f"{what} {size}" for _, what, size in missing)
+        return (f"Pipeline not loaded. First run downloads ~15 GB of weights ({total}) "
+                f"to ~/.cache/huggingface — this can take a while on a slow connection.")
+    return ("Pipeline not loaded. Weights are cached, so loading takes ~75s. "
+            "It runs automatically on your first generation.")
+
+
+def load_pipeline_ui():
+    """
+    Load the pipeline up front so the first generation isn't ~75s slower.
+
+    Downloads any missing weights on the way, which on a first ever run is the
+    full ~15 GB.
+    """
+    if runner.is_pipeline_loaded():
+        return "Pipeline already loaded on MPS — ready to generate."
+
+    downloading = bool(uncached_repos())
     t0 = time.time()
     runner.load_pipeline()
-    return f"Pipeline loaded on MPS in {time.time() - t0:.0f}s."
+    elapsed = time.time() - t0
+    note = " (weights downloaded and cached for next time)" if downloading else ""
+    return f"Pipeline loaded on MPS in {elapsed:.0f}s{note}. Reloads on each app restart."
+
+
+def loading_placeholder():
+    if runner.is_pipeline_loaded():
+        return "Pipeline already loaded on MPS — ready to generate."
+    if uncached_repos():
+        return "Downloading weights (~15 GB on first run) then loading onto MPS — watch the terminal for progress..."
+    return "Loading pipeline onto MPS (~75s)..."
 
 
 def image_to_3d(
@@ -114,7 +171,9 @@ def image_to_3d(
     output = os.path.join(OUTPUT_DIR, f"trellis_{stamp}")
 
     log_q = queue.Queue()
-    status = {"line": ""}
+    # "line" is the newest activity shown in the Status box; "at" is when it
+    # arrived, used to detect a stage that has gone quiet.
+    status = {"line": "", "at": time.time()}
     box = {}
 
     def worker():
@@ -150,7 +209,15 @@ def image_to_3d(
         elapsed = time.time() - t0
         head = f"Running — {elapsed:.0f}s elapsed"
         tail = status["line"]
-        return "\n".join(lines), f"{head}\n{tail}" if tail else head
+        if not tail:
+            return "\n".join(lines), head
+        # Some stages (Metal BVH build, xatlas packing) print nothing for a
+        # while. Say so, rather than leaving a finished progress bar on screen
+        # looking stuck.
+        quiet = time.time() - status["at"]
+        if quiet > 5:
+            tail += f"\n(still working — no new output for {quiet:.0f}s)"
+        return "\n".join(lines), f"{head}\n{tail}"
 
     log_text, status_text = render()
     yield None, None, log_text, status_text
@@ -163,6 +230,10 @@ def image_to_3d(
                 done = True
             else:
                 lines.append(item)
+                # Surface the newest phase message in Status too, so a finished
+                # progress bar never lingers there as the apparent current state.
+                status["line"] = item
+                status["at"] = time.time()
         except queue.Empty:
             pass
         log_text, status_text = render()
@@ -205,8 +276,12 @@ def build_ui():
         gr.Markdown(
             "## TRELLIS.2 image-to-3D on Apple Silicon\n"
             "Upload an image and generate a textured GLB. Background removal runs "
-            "automatically. Expect roughly 3–5 minutes per model on an M4 Pro, plus "
-            "a one-time ~100s pipeline load. Keep the tab open — progress streams below."
+            "automatically. Keep the tab open — progress streams below.\n\n"
+            "**First run downloads ~15 GB of model weights** to `~/.cache/huggingface` "
+            "(pipeline, image conditioning, background removal). That happens once. "
+            "After that the pipeline loads from disk in ~75s, and because it lives in "
+            "this Python process it **loads again every time you restart the app** — "
+            "either on your first generation, or up front with *Load pipeline*."
         )
 
         with gr.Row():
@@ -226,10 +301,16 @@ def build_ui():
                 steps = gr.Slider(0, 30, value=0, step=1, label="Sampler steps override",
                                   info="0 uses the pipeline default (12). Lower is faster, rougher.")
                 generate_btn = gr.Button("Generate 3D model", variant="primary")
-                preload_btn = gr.Button("Preload pipeline", variant="secondary")
+                load_btn = gr.Button("Load pipeline", variant="secondary")
+                gr.Markdown(
+                    "<sub>Optional. Downloads weights on first ever run (~15 GB), then "
+                    "loads in ~75s. Needed once per app start — otherwise the first "
+                    "generation pays for it.</sub>"
+                )
 
             with gr.Column(scale=2):
-                status = gr.Textbox(label="Status", value="Idle", lines=2, interactive=False)
+                status = gr.Textbox(label="Status", value="Checking model cache...",
+                                    lines=3, interactive=False)
                 model = gr.Model3D(label="Generated GLB", height=460, display_mode="solid",
                                    clear_color=(0.25, 0.25, 0.25, 1.0))
                 files = gr.Files(label="Downloads (GLB / OBJ)")
@@ -250,7 +331,15 @@ def build_ui():
             outputs=[model, files, log, status],
             concurrency_limit=1,
         )
-        preload_btn.click(load_pipeline_ui, outputs=[status], concurrency_limit=1)
+        # Report cache/load state as soon as the page opens, so the ~15 GB first
+        # download and the per-restart reload are never a surprise.
+        demo.load(pipeline_status_text, outputs=[status])
+
+        load_btn.click(
+            loading_placeholder, outputs=[status]
+        ).then(
+            load_pipeline_ui, outputs=[status], concurrency_limit=1
+        )
 
     return demo
 

@@ -1,8 +1,15 @@
-# TRELLIS.2 for Apple Silicon
+# TRELLIS.2 for Apple Silicon — with GUI
 
-Run [TRELLIS.2](https://github.com/microsoft/TRELLIS) image-to-3D generation natively on Mac.
+Run [TRELLIS.2](https://github.com/microsoft/TRELLIS) image-to-3D generation natively on Mac, from a browser or the command line.
 
 This is a port of Microsoft's TRELLIS.2 — a state-of-the-art image-to-3D model — from CUDA-only to Apple Silicon via PyTorch MPS. No NVIDIA GPU required.
+
+A fork of [shivampkumar/trellis-mac](https://github.com/shivampkumar/trellis-mac) (the original MPS port) adding:
+
+- **A local Gradio GUI** (`gui.py`) with a 3D viewer, live progress, and GLB/OBJ downloads
+- **No gated models** — the gated DINOv3 repo is routed to an open mirror, so no HuggingFace access requests
+- **Vendored dependencies** — TRELLIS.2 and all native deps ship in this repo, so setup does no cloning
+- **Automatic Metal Toolchain install** — `setup.sh` fetches it when missing, so the fast Metal texture baker actually builds
 
 ## Results
 
@@ -32,8 +39,8 @@ Output is a GLB with base-color, metallic, and roughness textures — ready for 
 
 ```bash
 # Clone this repo
-git clone https://github.com/shivampkumar/trellis-mac.git
-cd trellis-mac
+git clone https://github.com/SUP3RMASS1VE/trellis-mac-GUI.git
+cd trellis-mac-GUI
 
 # (Optional) Log into HuggingFace for higher download rate limits
 hf auth login
@@ -109,9 +116,11 @@ The GUI runs the same MPS code path as the CLI (`runner.py` is shared by both) a
 - drag-and-drop image input plus the TRELLIS.2 example images
 - resolution, texture size, seed, and sampler-step controls
 - an interactive GLB viewer with GLB/OBJ downloads, saved to `outputs/`
-- a live log that mirrors the sampler progress bars, so you can see which phase is running
+- a live log and status line covering every phase, including the quiet decode stages that emit no progress bar
 
-The pipeline stays warm between generations, so the ~100s load is paid once per process instead of once per image — batching several images through the GUI is meaningfully faster than repeated CLI runs. Only one generation runs at a time; extra requests queue.
+**First run downloads ~15GB of weights** to `~/.cache/huggingface`. The Status box says so up front, and reports what is still missing from the cache. After that, loading takes ~75s from disk.
+
+The pipeline is held in the Python process, so it loads once per app start — either automatically on your first generation, or up front with the **Load pipeline** button (`--preload` does the same at launch). It stays warm between generations afterwards, which makes batching several images through the GUI meaningfully faster than repeated CLI runs. Only one generation runs at a time; extra requests queue.
 
 The server binds to `127.0.0.1` and has **no authentication**. If you change `--host` to expose it on your network, anyone who can reach the port can run generations on your machine — put it behind a proxy with access control first.
 
@@ -208,6 +217,7 @@ Upstream model weights are subject to their own licenses:
 ## Credits
 
 - [TRELLIS.2](https://github.com/microsoft/TRELLIS.2) by Microsoft Research — the original model and codebase
+- [shivampkumar/trellis-mac](https://github.com/shivampkumar/trellis-mac) — the original Apple Silicon port this repo forks (backends, patches, CLI)
 - [DINOv3](https://github.com/facebookresearch/dinov3) by Meta — image feature extraction
 - [BiRefNet](https://github.com/ZhengPeng7/BiRefNet) by ZhengPeng7 — background removal
 - [@pedronaugusto](https://github.com/pedronaugusto) — `mtldiffrast`, `mtlbvh`, `mtlmesh`, and the CPU fork of `o_voxel` that together provide the Metal texture-baking path used by this repo
