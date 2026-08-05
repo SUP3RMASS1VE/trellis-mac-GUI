@@ -18,7 +18,10 @@ dependencies = [
     "trimesh",
     "scipy",
     "tqdm",
+    "gradio>=5.0",
+    "einops",
 ]
 
 [project.scripts]
 trellis-generate = "generate:main"
+trellis-gui = "gui:main"

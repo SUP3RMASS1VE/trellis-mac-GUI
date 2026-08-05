@@ -2,12 +2,32 @@
 __pycache__/
 *.pyc
 *.egg-info/
-TRELLIS.2/
-stubs/
+.DS_Store
+
+# Generated output
 *.obj
 *.glb
 *.gltf
-.DS_Store
+outputs/
 progress-assets/
 PROGRESS.md
-deps/
+
+# Vendored dependency build artifacts (~103MB of compiled objects).
+# The sources in deps/ ARE tracked; only their build output is not.
+deps/*/build/
+deps/*/dist/
+deps/*/.eggs/
+deps/**/*.so
+deps/**/*.dylib
+deps/**/*.metallib
+deps/**/*.o
+
+# mtlgemm regenerates this kernel autotune cache on first use
+deps/mtlgemm/autotune_cache.json
+
+# TRELLIS.2 runtime scratch
+TRELLIS.2/tmp/
+
+# Parked clone metadata of the vendored trees (see deps/VENDORED.md).
+# Kept locally so upstream history is recoverable; never uploaded.
+.git.vendored/

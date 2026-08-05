@@ -1,0 +1,45 @@
+# Trellis2 MLX requirements (Apple Silicon)
+# NO: flash_attn, spconv, torchsparse (CUDA-only)
+
+# Core
+# torch >= 2.11.0 is required because mtlgemm's metal_context.mm calls
+# at::mps::dispatch_sync_with_rethrow, which was promoted from
+# at::native::mps:: to at::mps:: in PyTorch 2.11 (PR #167445, merged
+# 2025-11-11). Earlier stable versions (2.6 – 2.10) only expose it under
+# at::native::mps:: and won't link.
+torch>=2.11.0
+torchvision>=0.26.0
+transformers>=4.40.0,<5
+safetensors
+huggingface_hub
+pillow
+numpy
+
+# Mesh processing
+trimesh
+xatlas
+fast-simplification
+pygltflib
+
+# Image processing
+opencv-python-headless
+
+# Server
+fastapi
+uvicorn[standard]
+pydantic>=2.0
+
+# MLX (Apple Silicon native)
+mlx>=0.31.0
+
+# Metal GPU packages (Apple Silicon — install with: pip install --no-build-isolation <url>)
+mtldiffrast @ https://github.com/pedronaugusto/mtldiffrast/archive/main.tar.gz
+cumesh @ https://github.com/pedronaugusto/mtlmesh/archive/main.tar.gz
+flex_gemm @ https://github.com/pedronaugusto/mtlgemm/archive/main.tar.gz
+
+# Misc
+tqdm
+imageio
+imageio-ffmpeg
+scipy
+einops
